@@ -6,12 +6,11 @@ from collections import Counter
 import subprocess
 
 st.set_page_config(
-    page_title="Etsy POD Trend Hunter",
-    page_icon="🔥",
+    page_title="Etsy POD Trend Vault",
+    page_icon="🏛️",
     layout="wide"
 )
 
-# --- Data Loading ---
 DATA_FILE = "pod_winners.json"
 
 def load_data():
@@ -26,32 +25,36 @@ def load_data():
 listings = load_data()
 
 # --- Header & Top Controls ---
-st.title("🔥 Etsy POD Trend Hunter")
-st.caption("Spotting high-momentum, recently created Print-on-Demand listings on Etsy.")
+st.title("🏛️ Etsy POD Trend Vault")
+st.caption("Your permanent archive of winning, high-momentum Print-on-Demand listings.")
 
 col_top1, col_top2 = st.columns([3, 1])
 with col_top2:
     if st.button("🔄 Run Live Scan Now", use_container_width=True):
-        with st.spinner("Scanning Etsy API for recent winners..."):
+        with st.spinner("Scanning Etsy and updating your Vault..."):
             subprocess.run(["python", "scanner.py"])
             st.rerun()
 
 if not listings:
-    st.warning("No listings found yet. Click 'Run Live Scan Now' above or run `python scanner.py` in your terminal.")
+    st.warning("Vault is empty. Click 'Run Live Scan Now' above to start finding winners.")
     st.stop()
 
-# --- Sidebar Filters ---
-st.sidebar.header("🔍 Filters")
+# --- Sidebar Filters & Sorting ---
+st.sidebar.header("🔍 Filters & Sort")
+
+sort_by = st.sidebar.selectbox(
+    "Sort Items By",
+    ["Highest Momentum Score", "Most Favorites", "Recently Discovered", "Newest Listing Age"]
+)
 
 all_keywords = sorted(list(set(item.get("search_keyword", "Other") for item in listings)))
 selected_keywords = st.sidebar.multiselect("Filter by Seed Keyword", all_keywords, default=all_keywords)
 
-min_score = st.sidebar.slider(
-    "Minimum Momentum Score", 
-    min_value=0.0, 
-    max_value=float(max(item.get("momentum_score", 1.0) for item in listings)), 
-    value=0.0, 
-    step=0.5
+min_favs = st.sidebar.slider(
+    "Minimum Total Favorites", 
+    min_value=0, 
+    max_value=int(max(item.get("num_favorers", 10) for item in listings)), 
+    value=5
 )
 
 max_age = st.sidebar.slider(
@@ -67,30 +70,39 @@ only_customizable = st.sidebar.checkbox("Only Customizable / Personalized Items"
 filtered_listings = [
     item for item in listings
     if item.get("search_keyword") in selected_keywords
-    and item.get("momentum_score", 0) >= min_score
+    and item.get("num_favorers", 0) >= min_favs
     and item.get("age_days", 0) <= max_age
     and (not only_customizable or item.get("is_personalizable", False))
 ]
 
+# --- Apply Sorting ---
+if sort_by == "Highest Momentum Score":
+    filtered_listings.sort(key=lambda x: x.get("momentum_score", 0), reverse=True)
+elif sort_by == "Most Favorites":
+    filtered_listings.sort(key=lambda x: x.get("num_favorers", 0), reverse=True)
+elif sort_by == "Recently Discovered":
+    filtered_listings.sort(key=lambda x: x.get("first_discovered", ""), reverse=True)
+elif sort_by == "Newest Listing Age":
+    filtered_listings.sort(key=lambda x: x.get("age_days", 999))
+
 # --- Top Stats Banner ---
 st.write("---")
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total Winners Tracked", len(listings))
-m2.metric("Matching Filters", len(filtered_listings))
+m1.metric("🏛️ Total Vault Products", len(listings))
+m2.metric("🎯 Matching Filters", len(filtered_listings))
 if filtered_listings:
-    top_score = max(item["momentum_score"] for item in filtered_listings)
-    avg_favs = round(sum(item["num_favorers"] for item in filtered_listings) / len(filtered_listings), 1)
-    m3.metric("Top Momentum Score", f"🔥 {top_score}")
-    m4.metric("Avg. Favorites", avg_favs)
+    top_score = max(item.get("momentum_score", 0) for item in filtered_listings)
+    avg_favs = round(sum(item.get("num_favorers", 0) for item in filtered_listings) / len(filtered_listings), 1)
+    m3.metric("🔥 Top Momentum Score", top_score)
+    m4.metric("❤️ Avg. Favorites", avg_favs)
 st.write("---")
 
 # --- Product Display Grid ---
-st.subheader("📦 Winning Listings Grid")
+st.subheader(f"📦 Product Vault ({len(filtered_listings)} listings)")
 
 if not filtered_listings:
     st.info("No listings match the selected filters.")
 else:
-    # Render in 3-column grid
     cols_per_row = 3
     for i in range(0, len(filtered_listings), cols_per_row):
         cols = st.columns(cols_per_row)
@@ -99,7 +111,7 @@ else:
                 item = filtered_listings[i + j]
                 with cols[j]:
                     with st.container(border=True):
-                        # Display Mockup Image
+                        # Mockup Image
                         if item.get("image_url"):
                             st.image(item["image_url"], use_container_width=True)
                         else:
@@ -115,7 +127,7 @@ else:
                         c3.caption(f"❤️ **{item['num_favorers']} favs**")
                         
                         # Momentum Badge
-                        score = item["momentum_score"]
+                        score = item.get("momentum_score", 0)
                         if score >= 5.0:
                             st.success(f"🚀 Breakout Score: **{score}**")
                         elif score >= 2.0:
@@ -123,6 +135,9 @@ else:
                         else:
                             st.warning(f"📈 Momentum Score: **{score}**")
                         
+                        # Discovery stamp
+                        st.caption(f"🗓️ *Discovered: {item.get('first_discovered', 'N/A')}*")
+
                         # Tags Accordion
                         if item.get("tags"):
                             with st.expander("🏷️ View 13 SEO Tags"):
@@ -130,7 +145,7 @@ else:
 
 # --- SEO Tag Analysis Section ---
 st.write("---")
-st.subheader("🏷️ Top Recurring Tags Across Winners")
+st.subheader("🏷️ Top Recurring Tags in Vault")
 
 all_tags = []
 for item in filtered_listings:
