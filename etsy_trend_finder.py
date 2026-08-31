@@ -44,7 +44,11 @@ import requests
 
 API_BASE = "https://openapi.etsy.com/v3/application"
 LISTINGS_PER_PAGE = 100  # Etsy API max per page
-REQUEST_DELAY_SEC = 0.15  # stay comfortably under rate limits
+
+# Real limits from the Etsy Developer dashboard for this key: 5 QPS, 5,000 QPD.
+# 0.22s between calls keeps us under 5/sec with a safety margin.
+REQUEST_DELAY_SEC = 0.22
+DAILY_QUOTA = 5000
 
 
 def api_get(path, api_key, params=None):
@@ -102,8 +106,31 @@ def days_since(creation_timestamp):
     return max(delta.total_seconds() / 86400, 0.01)  # floor to avoid div-by-zero
 
 
-def analyze(search_term, api_key, days_threshold, min_reviews, max_pages):
+def analyze(search_term, api_key, days_threshold, min_reviews, max_pages, dry_run=False):
     print(f"Searching Etsy for: '{search_term}' (up to {max_pages} pages)...")
+
+    if dry_run:
+        # Dry-run only estimates cost: it fetches listing metadata (which we need
+        # anyway to know ages) but skips the per-listing review-count calls,
+        # since those are the bulk of quota usage.
+        listings = fetch_listings(search_term, api_key, max_pages)
+        eligible = [
+            l for l in listings
+            if (l.get("original_creation_timestamp") or l.get("creation_timestamp"))
+            and days_since(l.get("original_creation_timestamp") or l.get("creation_timestamp")) <= days_threshold
+        ]
+        search_calls = -(-len(listings) // LISTINGS_PER_PAGE) or 1  # ceil division, min 1
+        review_calls = len(eligible)
+        total_calls = search_calls + review_calls
+        print(f"\nDRY RUN ESTIMATE for '{search_term}':")
+        print(f"  Listings scanned:         {len(listings)}")
+        print(f"  Newly-listed candidates:  {len(eligible)} (would cost 1 review-count call each)")
+        print(f"  Estimated API calls:      {total_calls} "
+              f"(search: {search_calls}, reviews: {review_calls})")
+        print(f"  Daily quota:              {DAILY_QUOTA}")
+        print(f"  Estimated % of daily quota used: {total_calls / DAILY_QUOTA * 100:.1f}%")
+        return []
+
     listings = fetch_listings(search_term, api_key, max_pages)
     print(f"Total listings fetched: {len(listings)}")
 
@@ -143,6 +170,7 @@ def analyze(search_term, api_key, days_threshold, min_reviews, max_pages):
 
     candidates.sort(key=lambda c: c["review_velocity"], reverse=True)
     return candidates
+
 
 
 def write_csv(candidates, out_path):
@@ -367,6 +395,8 @@ def main():
     parser.add_argument("--out", default="etsy_trend_results.csv", help="Output CSV path")
     parser.add_argument("--html-out", default="etsy_trend_report.html",
                          help="Output HTML report path (default: etsy_trend_report.html)")
+    parser.add_argument("--dry-run", action="store_true",
+                         help="Estimate API call cost against the daily quota without spending review-count calls")
     args = parser.parse_args()
 
     candidates = analyze(
@@ -375,7 +405,11 @@ def main():
         days_threshold=args.days,
         min_reviews=args.min_reviews,
         max_pages=args.max_pages,
+        dry_run=args.dry_run,
     )
+
+    if args.dry_run:
+        return
 
     print("\nTop candidates by review velocity:")
     for c in candidates[:15]:
