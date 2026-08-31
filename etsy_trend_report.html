@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Etsy Trend Finder — personalized kids books</title>
+<style>
+  :root {
+    --bg: #14171C;
+    --panel: #1C2027;
+    --border: #2A2F38;
+    --text: #E8E6E0;
+    --text-dim: #8B9099;
+    --accent: #5EC8B8;
+    --price: #D9A34A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Inter, sans-serif;
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .subterm {
+    color: var(--text-dim);
+    font-size: 14px;
+    margin: 0 0 28px;
+  }
+  .stats {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 18px;
+    min-width: 140px;
+  }
+  .stat .num {
+    font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+    font-size: 22px;
+    color: var(--accent);
+  }
+  .stat .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  thead th:hover { color: var(--text); }
+  thead th.sorted::after { content: " ↓"; color: var(--accent); }
+  tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: rgba(94, 200, 184, 0.06); }
+  .mono { font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace; }
+  .price { color: var(--price); }
+  .title-cell a { color: var(--text); text-decoration: none; }
+  .title-cell a:hover { color: var(--accent); text-decoration: underline; }
+  .velocity-cell { position: relative; min-width: 110px; }
+  .velocity-bar {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    background: rgba(94, 200, 184, 0.18);
+    z-index: 0;
+  }
+  .velocity-val { position: relative; z-index: 1; }
+  .empty {
+    color: var(--text-dim);
+    padding: 40px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Etsy Trend Finder</h1>
+  <p class="subterm">Search term: "personalized kids books" — 9 candidates found</p>
+
+  <div class="stats">
+    <div class="stat"><div class="num mono">9</div><div class="label">Candidates</div></div>
+    <div class="stat"><div class="num mono">0.097</div><div class="label">Best velocity (rev/day)</div></div>
+    <div class="stat"><div class="num mono">0.053</div><div class="label">Avg velocity</div></div>
+  </div>
+
+  <table id="results">
+    <thead>
+      <tr>
+        <th data-key="title">Title</th>
+        <th data-key="price" class="mono">Price</th>
+        <th data-key="age_days" class="mono">Age (d)</th>
+        <th data-key="review_count" class="mono">Reviews</th>
+        <th data-key="favorites" class="mono">Favorites</th>
+        <th data-key="review_velocity" class="mono sorted">Velocity</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="emptyState" class="empty" style="display:none;">No candidates matched your filters for this search term.</div>
+</div>
+
+<script>
+  const data = [{"listing_id": 4559819367, "title": "Personalized Zoo Book for Kids | Custom Name Children&#39;s Book | Birthday Gift", "url": "https://www.etsy.com/listing/4559819367/personalized-zoo-book-for-kids-custom", "price": 34.99, "age_days": 10.3, "review_count": 1, "favorites": 3, "review_velocity": 0.097}, {"listing_id": 4550764161, "title": "Custom Photo Playing Cards for Wedding | Personalized Wedding Newspaper Guest Bo", "url": "https://www.etsy.com/listing/4550764161/custom-photo-playing-cards-for-wedding", "price": 9.73, "age_days": 25.5, "review_count": 2, "favorites": 166, "review_velocity": 0.079}, {"listing_id": 4548387793, "title": "Personalized First Prayer Book for Kids with Photo & Name, Christian Everyday Be", "url": "https://www.etsy.com/listing/4548387793/personalized-first-prayer-book-for-kids", "price": 27.58, "age_days": 29.3, "review_count": 2, "favorites": 29, "review_velocity": 0.068}, {"listing_id": 4552841607, "title": "Custom First Birthday Story Book for Baby Boy Girl, Personalized 1st Birthday Gi", "url": "https://www.etsy.com/listing/4552841607/custom-first-birthday-story-book-for", "price": 34.26, "age_days": 21.8, "review_count": 1, "favorites": 45, "review_velocity": 0.046}, {"listing_id": 4551935590, "title": "Personalized Mimi Book for Grandchild, Custom Name Mimi and Me Storybook, I Love", "url": "https://www.etsy.com/listing/4551935590/personalized-mimi-book-for-grandchild", "price": 52.5, "age_days": 23.6, "review_count": 1, "favorites": 11, "review_velocity": 0.042}, {"listing_id": 4550286343, "title": "Personalized Christian Goose Book, Custom Farm Storybook With Name, Baptism Gift", "url": "https://www.etsy.com/listing/4550286343/personalized-christian-goose-book-custom", "price": 22.5, "age_days": 26.2, "review_count": 1, "favorites": 16, "review_velocity": 0.038}, {"listing_id": 4550232723, "title": "Personalized All Characters Autograph Book, Mickey and Friends Signatures Book, ", "url": "https://www.etsy.com/listing/4550232723/personalized-all-characters-autograph", "price": 22.0, "age_days": 26.2, "review_count": 1, "favorites": 110, "review_velocity": 0.038}, {"listing_id": 4549726824, "title": "Personalized Christmas Book for Kids, Custom Name Storybook for Boy or Girl, Mag", "url": "https://www.etsy.com/listing/4549726824/personalized-christmas-book-for-kids", "price": 21.98, "age_days": 27.1, "review_count": 1, "favorites": 4, "review_velocity": 0.037}, {"listing_id": 4548833685, "title": "Personalized Christmas Gift for Kids, Custom Christmas Book, Personalized Story ", "url": "https://www.etsy.com/listing/4548833685/personalized-christmas-gift-for-kids", "price": 39.99, "age_days": 28.5, "review_count": 1, "favorites": 19, "review_velocity": 0.035}];
+  const maxVelocity = Math.max(1e-6, ...data.map(d => d.review_velocity));
+  let sortKey = "review_velocity";
+  let sortDir = -1;
+
+  function render() {
+    const tbody = document.getElementById("tbody");
+    const rows = [...data].sort((a, b) => (a[sortKey] > b[sortKey] ? 1 : -1) * sortDir);
+    tbody.innerHTML = rows.map(r => {
+      const barWidth = (r.review_velocity / maxVelocity * 100).toFixed(1);
+      return `
+        <tr>
+          <td class="title-cell"><a href="${r.url}" target="_blank" rel="noopener">${r.title}</a></td>
+          <td class="mono price">$${Number(r.price).toFixed(2)}</td>
+          <td class="mono">${r.age_days}</td>
+          <td class="mono">${r.review_count}</td>
+          <td class="mono">${r.favorites}</td>
+          <td class="mono velocity-cell">
+            <div class="velocity-bar" style="width:${barWidth}%"></div>
+            <span class="velocity-val">${r.review_velocity.toFixed(3)}</span>
+          </td>
+        </tr>`;
+    }).join("");
+    document.getElementById("emptyState").style.display = data.length ? "none" : "block";
+  }
+
+  document.querySelectorAll("th[data-key]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      if (sortKey === key) {
+        sortDir *= -1;
+      } else {
+        sortKey = key;
+        sortDir = -1;
+      }
+      document.querySelectorAll("th").forEach(h => h.classList.remove("sorted"));
+      th.classList.add("sorted");
+      render();
+    });
+  });
+
+  render();
+</script>
+</body>
+</html>

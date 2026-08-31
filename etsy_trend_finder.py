@@ -19,15 +19,16 @@ estimating — we're ranking by a real lower-bound signal, normalized by time.
 Requirements:
     pip install requests --break-system-packages
 
-You need a free Etsy API key (keystring):
-    1. Go to https://www.etsy.com/developers/register
-    2. Create an app, copy the "Keystring" -- that's your API key.
-    3. Public read-only endpoints (active listing search, reviews) work
-       with just the API key in the x-api-key header, no OAuth needed.
+You need a free Etsy API key + shared secret:
+    1. Go to https://www.etsy.com/developers/register and create a Personal App.
+    2. On your app's dashboard you'll see both a "Keystring" and a "Shared Secret" —
+       you need BOTH. Every request's x-api-key header must be
+       "<keystring>:<shared_secret>" — the keystring alone returns 403 Forbidden.
 
 Usage:
     python etsy_trend_finder.py "prop firm risk calculator" \
-        --api-key YOUR_KEY \
+        --api-key YOUR_KEYSTRING \
+        --api-secret YOUR_SHARED_SECRET \
         --days 30 \
         --min-reviews 1 \
         --max-pages 10 \
@@ -42,7 +43,7 @@ from datetime import datetime, timezone
 
 import requests
 
-API_BASE = "https://openapi.etsy.com/v3/application"
+API_BASE = "https://api.etsy.com/v3/application"
 LISTINGS_PER_PAGE = 100  # Etsy API max per page
 
 # Real limits from the Etsy Developer dashboard for this key: 5 QPS, 5,000 QPD.
@@ -51,9 +52,13 @@ REQUEST_DELAY_SEC = 0.22
 DAILY_QUOTA = 5000
 
 
-def api_get(path, api_key, params=None):
-    """Call the Etsy Open API with basic retry/backoff on rate limiting."""
-    headers = {"x-api-key": api_key}
+def api_get(path, api_key, api_secret, params=None):
+    """Call the Etsy Open API with basic retry/backoff on rate limiting.
+
+    Every v3 request needs x-api-key as "<keystring>:<shared_secret>" —
+    the keystring alone is not sufficient and returns 403 Forbidden.
+    """
+    headers = {"x-api-key": f"{api_key}:{api_secret}"}
     url = f"{API_BASE}{path}"
     for attempt in range(5):
         resp = requests.get(url, headers=headers, params=params, timeout=20)
@@ -62,12 +67,14 @@ def api_get(path, api_key, params=None):
             print(f"  Rate limited, waiting {wait}s...", file=sys.stderr)
             time.sleep(wait)
             continue
+        if resp.status_code >= 400:
+            print(f"  Etsy API error {resp.status_code} on {url}: {resp.text[:300]}", file=sys.stderr)
         resp.raise_for_status()
         return resp.json()
     raise RuntimeError(f"Failed after retries: {url}")
 
 
-def fetch_listings(search_term, api_key, max_pages):
+def fetch_listings(search_term, api_key, api_secret, max_pages):
     """Fetch active listings for a search term, newest first, up to max_pages."""
     all_listings = []
     for page in range(max_pages):
@@ -79,7 +86,7 @@ def fetch_listings(search_term, api_key, max_pages):
             "limit": LISTINGS_PER_PAGE,
             "offset": offset,
         }
-        data = api_get("/listings/active", api_key, params)
+        data = api_get("/listings/active", api_key, api_secret, params)
         results = data.get("results", [])
         if not results:
             break
@@ -91,10 +98,10 @@ def fetch_listings(search_term, api_key, max_pages):
     return all_listings
 
 
-def fetch_review_count(listing_id, api_key):
+def fetch_review_count(listing_id, api_key, api_secret):
     """Get the true review count for a listing (limit=1, we only need the count)."""
     params = {"limit": 1, "offset": 0}
-    data = api_get(f"/listings/{listing_id}/reviews", api_key, params)
+    data = api_get(f"/listings/{listing_id}/reviews", api_key, api_secret, params)
     time.sleep(REQUEST_DELAY_SEC)
     return data.get("count", 0)
 
@@ -106,14 +113,14 @@ def days_since(creation_timestamp):
     return max(delta.total_seconds() / 86400, 0.01)  # floor to avoid div-by-zero
 
 
-def analyze(search_term, api_key, days_threshold, min_reviews, max_pages, dry_run=False):
+def analyze(search_term, api_key, api_secret, days_threshold, min_reviews, max_pages, dry_run=False):
     print(f"Searching Etsy for: '{search_term}' (up to {max_pages} pages)...")
 
     if dry_run:
         # Dry-run only estimates cost: it fetches listing metadata (which we need
         # anyway to know ages) but skips the per-listing review-count calls,
         # since those are the bulk of quota usage.
-        listings = fetch_listings(search_term, api_key, max_pages)
+        listings = fetch_listings(search_term, api_key, api_secret, max_pages)
         eligible = [
             l for l in listings
             if (l.get("original_creation_timestamp") or l.get("creation_timestamp"))
@@ -131,7 +138,7 @@ def analyze(search_term, api_key, days_threshold, min_reviews, max_pages, dry_ru
         print(f"  Estimated % of daily quota used: {total_calls / DAILY_QUOTA * 100:.1f}%")
         return []
 
-    listings = fetch_listings(search_term, api_key, max_pages)
+    listings = fetch_listings(search_term, api_key, api_secret, max_pages)
     print(f"Total listings fetched: {len(listings)}")
 
     candidates = []
@@ -145,7 +152,7 @@ def analyze(search_term, api_key, days_threshold, min_reviews, max_pages, dry_ru
         if age_days > days_threshold:
             continue  # not "newly listed" — skip before spending an API call on it
 
-        review_count = fetch_review_count(listing_id, api_key)
+        review_count = fetch_review_count(listing_id, api_key, api_secret)
         if review_count < min_reviews:
             continue
 
@@ -386,6 +393,9 @@ def main():
     parser = argparse.ArgumentParser(description="Find newly-listed, already-selling Etsy listings.")
     parser.add_argument("search_term", help="Etsy search keywords")
     parser.add_argument("--api-key", required=True, help="Etsy API keystring")
+    parser.add_argument("--api-secret", required=True,
+                         help="Etsy App shared secret (shown next to your keystring on the dashboard). "
+                              "Required — Etsy rejects requests with the keystring alone.")
     parser.add_argument("--days", type=int, default=30,
                          help="Max listing age in days to count as 'newly listed' (default: 30)")
     parser.add_argument("--min-reviews", type=int, default=1,
@@ -402,6 +412,7 @@ def main():
     candidates = analyze(
         search_term=args.search_term,
         api_key=args.api_key,
+        api_secret=args.api_secret,
         days_threshold=args.days,
         min_reviews=args.min_reviews,
         max_pages=args.max_pages,
