@@ -1,8 +1,18 @@
-import json
-import os
+"""
+2-Tier Etsy POD Intelligence Engine
+===================================
+Tier 1: Discovery Engine — Scans keywords for fresh breakouts (< 30 days).
+Tier 2: Surveillance Engine — Pings tracked items directly by ID to monitor
+        favorite growth deltas over time (Evergreens vs. Faded).
+"""
+
+import html
 import time
 from datetime import datetime, timezone
+from typing import Dict, Any
+
 from etsy_client import EtsyClient
+from storage import VaultStorage, DATA_FILE
 
 # ==========================================
 # 🎯 HIGH-CONVERTING POD MICRO-NICHES
@@ -68,170 +78,194 @@ POD_SEARCH_TERMS = [
 ]
 
 # ==========================================
-# ⚙️ SCANNER CONFIGURATION & SAFETY SETTINGS
+# ⚙️ SCANNER CONFIGURATION
 # ==========================================
-MAX_LISTING_AGE_DAYS = 30     # Only look at listings created in the last 30 days
-MIN_FAVORITES = 5             # Minimum favorites threshold to filter out zero-traction noise
-LISTINGS_PER_KEYWORD = 100    # Depth per keyword (100 = 1 page, 200 = 2 pages)
-OUTPUT_FILENAME = "pod_winners.json"
+MAX_DISCOVERY_AGE_DAYS = 30   # Only discover items created in the last 30 days
+MIN_FAVORITES = 5             # Filter out noise with zero traction
+ITEMS_PER_KEYWORD = 100       # Single page per niche (1 API call per niche)
+MAX_SURVEILLANCE_CHECKS = 150 # Max mature vault items to check per daily run
 
 
-def calculate_age_days(timestamp):
-    """Calculates listing age in days from a Unix timestamp."""
-    if not timestamp:
-        return 0
-    created_date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    now = datetime.now(timezone.utc)
-    delta = now - created_date
-    return max(0, delta.days)
+def parse_price(item: Dict[str, Any]) -> str:
+    """Formats the price dictionary into a readable string."""
+    price_info = item.get("price", {})
+    if isinstance(price_info, dict):
+        amount = price_info.get("amount", 0)
+        divisor = price_info.get("divisor", 100)
+        currency = price_info.get("currency_code", "USD")
+        return f"{amount / divisor:.2f} {currency}"
+    return f"{price_info} USD"
 
 
-def get_listing_image(client, listing_id):
-    """Fetches the primary display image URL for a specific listing."""
-    data = client.get(f"listings/{listing_id}/images")
-    if data and "results" in data and len(data["results"]) > 0:
-        return data["results"][0].get("url_570xN")
-    return None
-
-
-def load_existing_vault():
-    """Loads existing listings so we never lose past discoveries."""
-    if not os.path.exists(OUTPUT_FILENAME):
-        return {}
-    try:
-        with open(OUTPUT_FILENAME, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return {str(item["listing_id"]): item for item in data}
-    except Exception:
-        return {}
-
-
-def fetch_paginated_listings(client, keyword, total_target=100):
-    """Fetches listings using pagination (100 items per request)."""
-    all_results = []
-    page_size = min(100, total_target)
-    offset = 0
-
-    while offset < total_target:
-        params = {
-            "keywords": keyword,
-            "limit": page_size,
-            "offset": offset,
-            "sort_on": "created",
-            "sort_order": "desc"
-        }
-        
-        response = client.get("listings/active", params=params)
-        
-        if not response or "results" not in response:
-            break
-
-        results = response["results"]
-        if not results:
-            break
-
-        all_results.extend(results)
-        offset += page_size
-
-        # If Etsy returned fewer items than requested, we reached the end
-        if len(results) < page_size:
-            break
-
-    return all_results
-
-
-def run_scanner():
-    client = EtsyClient()
-    vault = load_existing_vault()
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
+def run_discovery_tier(
+    client: EtsyClient,
+    vault: Dict[str, Dict[str, Any]],
+    today_str: str,
+    now_ts: float
+) -> int:
+    """
+    Tier 1: Scans micro-niches for newly listed products with rapid traction.
+    """
     new_discoveries = 0
-    updated_items = 0
-    total_listings_checked = 0
-
-    print("======================================================")
-    print(f"🏛️  Etsy POD Permanent Vault Engine")
-    print(f"📦  Loaded {len(vault)} existing products from Vault")
-    print(f"🎯  Scanning {len(POD_SEARCH_TERMS)} High-Converting Micro-Niches")
-    print(f"📊  Target Depth: {LISTINGS_PER_KEYWORD} newest items per niche")
-    print("======================================================\n")
+    print("\n" + "=" * 60)
+    print("🚀 TIER 1: DISCOVERY ENGINE (Scanning New Listings < 30d)")
+    print("=" * 60)
 
     for idx, keyword in enumerate(POD_SEARCH_TERMS, 1):
-        print(f"[{idx}/{len(POD_SEARCH_TERMS)}] 🔍 Scanning: '{keyword}'...")
-        
-        listings = fetch_paginated_listings(client, keyword, total_target=LISTINGS_PER_KEYWORD)
-        total_listings_checked += len(listings)
+        print(f"[{idx:02d}/{len(POD_SEARCH_TERMS)}] 🔍 Niche: '{keyword}'...")
 
+        data = client.search_active_listings(
+            keywords=keyword,
+            limit=ITEMS_PER_KEYWORD,
+            sort_on="created",
+            sort_order="desc"
+        )
+
+        if not data or "results" not in data:
+            continue
+
+        listings = data["results"]
         for item in listings:
             listing_id_str = str(item.get("listing_id"))
+            num_favorers = int(item.get("num_favorers", 0))
 
-            # 1. Age verification (only items <= 30 days old)
-            created_ts = item.get("original_creation_timestamp") or item.get("creation_timestamp")
-            age_days = calculate_age_days(created_ts)
+            # Timestamp check
+            created_ts = item.get("original_creation_timestamp") or item.get("creation_timestamp") or now_ts
+            age_seconds = max(now_ts - created_ts, 3600)
+            age_days = round(age_seconds / 86400, 1)
 
-            if age_days > MAX_LISTING_AGE_DAYS:
+            # Discovery filter: Under 30 days old and >= MIN_FAVORITES
+            if age_days > MAX_DISCOVERY_AGE_DAYS or num_favorers < MIN_FAVORITES:
                 continue
 
-            # 2. Favorites threshold
-            num_favorers = item.get("num_favorers", 0)
-            if num_favorers < MIN_FAVORITES:
-                continue
-
-            # 3. Momentum Score calculation
-            momentum_score = round(num_favorers / (age_days + 1), 2)
-
-            # 4. Format price properly
-            price_info = item.get("price", {})
-            amount = price_info.get("amount", 0)
-            divisor = price_info.get("divisor", 100)
-            currency = price_info.get("currency_code", "USD")
-            formatted_price = f"{amount / divisor:.2f} {currency}"
-
-            # Check if this item is already known in our Vault
+            # Update existing or add new discovery
             if listing_id_str in vault:
-                vault[listing_id_str]["num_favorers"] = num_favorers
-                vault[listing_id_str]["momentum_score"] = momentum_score
-                vault[listing_id_str]["age_days"] = age_days
-                vault[listing_id_str]["last_updated"] = today_str
-                updated_items += 1
+                # Update current metrics
+                entry = vault[listing_id_str]
+                entry["num_favorers"] = num_favorers
+                entry["last_updated"] = today_str
+                fav_history = entry.setdefault("fav_history", {})
+                fav_history[today_str] = num_favorers
             else:
-                # Brand new breakout discovery!
-                image_url = get_listing_image(client, listing_id_str)
-                
+                # New Breakout Found! Fetch its image URL
+                clean_title = html.unescape(item.get("title", ""))
+                image_url = client.get_listing_image(listing_id_str)
+                price_str = parse_price(item)
+                momentum = round(num_favorers / max(age_days, 0.1), 2)
+
                 vault[listing_id_str] = {
                     "listing_id": item.get("listing_id"),
-                    "title": item.get("title"),
+                    "title": clean_title,
                     "search_keyword": keyword,
+                    "created_timestamp": int(created_ts),
                     "age_days": age_days,
                     "num_favorers": num_favorers,
-                    "momentum_score": momentum_score,
-                    "price": formatted_price,
+                    "momentum_score": momentum,
+                    "price": price_str,
                     "url": item.get("url"),
                     "image_url": image_url,
                     "tags": item.get("tags", []),
                     "views": item.get("views", 0),
                     "is_personalizable": item.get("is_personalizable", False),
                     "first_discovered": today_str,
-                    "last_updated": today_str
+                    "last_updated": today_str,
+                    "fav_history": {today_str: num_favorers}
                 }
                 new_discoveries += 1
-                print(f"   ✨ NEW WINNER: {item.get('title')[:40]}... (Favs: {num_favorers} | Age: {age_days}d | Score: {momentum_score})")
+                print(f"   ✨ NEW BREAKOUT: {clean_title[:45]}... (Favs: {num_favorers} | Age: {age_days}d | Momentum: {momentum})")
 
-    # Sort entire vault by Momentum Score (descending)
-    all_vault_items = list(vault.values())
-    all_vault_items.sort(key=lambda x: x.get("momentum_score", 0), reverse=True)
+    return new_discoveries
 
-    # Save to JSON
-    with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
-        json.dump(all_vault_items, f, indent=2, ensure_ascii=False)
 
-    print("\n======================================================")
-    print(f"✅ Scan Complete!")
-    print(f"🔎 Total Recent Listings Inspected: {total_listings_checked}")
-    print(f"✨ New Winners Added to Vault: {new_discoveries}")
-    print(f"🔄 Existing Winners Updated: {updated_items}")
-    print(f"🏛️  Total Products in Permanent Vault: {len(all_vault_items)}")
+def run_surveillance_tier(
+    client: EtsyClient,
+    vault: Dict[str, Dict[str, Any]],
+    today_str: str,
+    now_ts: float
+) -> int:
+    """
+    Tier 2: Direct lookup of older vault items (> 30 days) to track growth.
+    """
+    print("\n" + "=" * 60)
+    print("🌲 TIER 2: VAULT SURVEILLANCE ENGINE (Tracking Growth of Older Items)")
+    print("=" * 60)
+
+    # Find vault items that were NOT updated in today's discovery scan
+    items_to_check = [
+        listing_id for listing_id, item in vault.items()
+        if item.get("last_updated") != today_str
+    ]
+
+    print(f"👁️ Identified {len(items_to_check)} items needing surveillance checkpoints...")
+    if not items_to_check:
+        print("✅ All items already updated today.")
+        return 0
+
+    checked_count = 0
+    for listing_id in items_to_check[:MAX_SURVEILLANCE_CHECKS]:
+        data = client.get_listing(listing_id)
+        if not data:
+            continue
+
+        item_data = data.get("results", [data])[0] if "results" in data else data
+        new_favs = int(item_data.get("num_favorers", 0))
+
+        entry = vault[listing_id]
+        prev_favs = entry.get("num_favorers", new_favs)
+        fav_delta = new_favs - prev_favs
+
+        entry["num_favorers"] = new_favs
+        entry["last_updated"] = today_str
+        fav_history = entry.setdefault("fav_history", {})
+        fav_history[today_str] = new_favs
+
+        # Dynamic age update
+        created_ts = entry.get("created_timestamp", now_ts)
+        entry["age_days"] = round(max(now_ts - created_ts, 3600) / 86400, 1)
+
+        checked_count += 1
+        if fav_delta > 0:
+            print(f"   📈 [{entry['title'][:35]}...] Gained +{fav_delta} favorites! (Total: {new_favs})")
+
+    return checked_count
+
+
+def run_scanner():
+    storage = VaultStorage(DATA_FILE)
+    vault = storage.load_vault()
+    client = EtsyClient()
+
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    now_ts = now.timestamp()
+
     print("======================================================")
+    print(f"🏛️  Etsy POD Permanent Vault Engine v2.0")
+    print(f"📦  Loaded {len(vault)} products from Vault")
+    print(f"🎯  Scanning {len(POD_SEARCH_TERMS)} High-Converting Niches")
+    print("======================================================")
+
+    # 1. Run Discovery Tier (Fresh Breakouts < 30 days)
+    new_breakouts = run_discovery_tier(client, vault, today_str, now_ts)
+
+    # 2. Run Surveillance Tier (Established items > 30 days)
+    surveillance_checks = run_surveillance_tier(client, vault, today_str, now_ts)
+
+    # 3. Save atomically and re-enrich
+    storage.save_vault(vault)
+
+    # Summarize lifecycle distribution
+    statuses = [item.get("lifecycle_status") for item in vault.values()]
+    print("\n" + "=" * 60)
+    print("📊 RUN COMPLETE & VAULT REFRESHED")
+    print("=" * 60)
+    print(f"✨ New Breakouts Discovered: {new_breakouts}")
+    print(f"👁️ Surveillance Items Checked: {surveillance_checks}")
+    print(f"🏛️ Total Vault Library: {len(vault)} listings")
+    print(f"   • 🚀 Breakouts (< 30d): {statuses.count('Breakout')}")
+    print(f"   • 🌲 Evergreens (> 30d, actively growing): {statuses.count('Evergreen')}")
+    print(f"   • 🥀 Faded (> 30d, flatlined): {statuses.count('Faded')}")
+    print("======================================================\n")
 
 
 if __name__ == "__main__":
