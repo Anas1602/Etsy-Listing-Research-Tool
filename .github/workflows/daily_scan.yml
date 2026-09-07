@@ -2,7 +2,7 @@ name: Daily Etsy POD Hunter
 
 on:
   schedule:
-    # Runs every day at 06:00 AM UTC
+    # Runs autonomously every day at 06:00 AM UTC
     - cron: '0 6 * * *'
   # Allows you to trigger the scan manually from the GitHub Actions tab anytime
   workflow_dispatch:
@@ -12,31 +12,57 @@ permissions:
 
 jobs:
   scan:
+    name: Run 2-Tier POD Scanner
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run POD Scanner
+      - name: Verify Environment Secrets
+        run: |
+          if [ -z "${{ secrets.ETSY_API_KEY }}" ] || [ -z "${{ secrets.ETSY_API_SECRET }}" ]; then
+            echo "❌ Error: ETSY_API_KEY or ETSY_API_SECRET is missing in GitHub Repository Secrets!"
+            echo "Please go to Settings -> Secrets and variables -> Actions to configure them."
+            exit 1
+          fi
+          echo "✅ Etsy credentials detected in GitHub Secrets."
+
+      - name: Execute Discovery & Surveillance Scanner
         env:
           ETSY_API_KEY: ${{ secrets.ETSY_API_KEY }}
           ETSY_API_SECRET: ${{ secrets.ETSY_API_SECRET }}
         run: |
           python scanner.py
 
-      - name: Commit and push updated winners
+      - name: Commit and Push Vault Updates
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global pull.rebase true
+          
           git add pod_winners.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update POD winners [skip ci]" && git push)
+          
+          # Only commit if pod_winners.json actually had new discoveries or updated numbers
+          if git diff --staged --quiet; then
+            echo "No changes detected in pod_winners.json. Skipping commit."
+          else
+            TODAY=$(date -u +"%Y-%m-%d")
+            git commit -m "Auto-update POD Vault [$TODAY] [skip ci]"
+            git pull origin main --rebase || true
+            git push
+            echo "✅ Successfully pushed updated POD winners to vault!"
+          fi
